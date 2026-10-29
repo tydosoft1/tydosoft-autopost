@@ -35,4 +35,7 @@ def main(paths):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    try:
+        main(sys.argv[1:])
+    except tg.TelegramError as e:
+        tg.fail(f"Telegram: {e}. {tg.explain(e)}")

@@ -11,15 +11,25 @@ import uuid
 API_BASE = os.environ.get("TG_API_BASE", "https://api.telegram.org")
 
 
+def fail(message):
+    """Ошибка видна в GitHub (аннотация к запуску) и завершает скрипт."""
+    print(f"::error::{message}")
+    sys.exit(1)
+
+
 def env(name, default=None, required=True):
     value = os.environ.get(name, "").strip() or default
     if required and not value:
-        sys.exit(f"Не задан секрет {name}. Добавь его в Settings → Secrets and variables → Actions.")
+        fail(f"Не задан секрет {name}. Добавь его в Settings → Secrets and variables → Actions "
+             f"(имя ровно {name}, без пробелов).")
     return value
 
 
 TOKEN = env("BOT_TOKEN")
-OWNER_ID = int(env("OWNER_ID"))
+try:
+    OWNER_ID = int(env("OWNER_ID"))
+except ValueError:
+    fail("Секрет OWNER_ID должен быть числом (твой Telegram ID из @userinfobot), а не @username.")
 CHANNEL = env("CHANNEL", default="@tydosoft", required=False)
 
 DRAFT_BUTTONS = {
@@ -118,6 +128,19 @@ def send_draft(text=None, entities=None, html=None, photo_path=None, photo_id=No
             kw.update(html=None, text=html)
             return send_post(OWNER_ID, **kw)
         raise
+
+
+def explain(err):
+    """Понятная подсказка к частым ошибкам Telegram."""
+    e = str(err).lower()
+    if "unauthorized" in e or "not found" in e and "chat" not in e:
+        return "Неверный BOT_TOKEN — скопируй токен из @BotFather заново."
+    if "chat not found" in e or "can't initiate" in e or "blocked" in e:
+        return ("Бот не может написать тебе: открой своего бота в Telegram и нажми Start, "
+                "и проверь, что OWNER_ID — именно твой ID из @userinfobot.")
+    if "administrator" in e or "not enough rights" in e or "need" in e and "rights" in e:
+        return "Бот не админ канала или у него нет права «Публикация сообщений»."
+    return ""
 
 
 def notify(text):

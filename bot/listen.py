@@ -154,4 +154,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except tg.TelegramError as e:
+        tg.fail(f"Telegram: {e}. {tg.explain(e)}")
