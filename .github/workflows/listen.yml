@@ -1,0 +1,29 @@
+name: Проверить кнопки бота
+
+on:
+  schedule:
+    # каждые 10 минут с 06:00 до 23:59 по Минску (в cron время UTC)
+    - cron: "*/10 3-20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-listen
+  cancel-in-progress: false
+
+jobs:
+  listen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: bot
+      - name: Обработать нажатия и сообщения
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          CHANNEL: ${{ vars.CHANNEL }}
+        run: python3 bot/listen.py --minutes 1

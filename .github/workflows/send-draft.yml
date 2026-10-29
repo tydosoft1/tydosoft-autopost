@@ -1,0 +1,61 @@
+name: Отправить черновик в Telegram
+
+on:
+  push:
+    branches: [main]
+    paths: ["drafts/**"]
+  workflow_dispatch: # ручной запуск: переотправит самый свежий черновик
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Найти новые черновики
+        id: files
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            FILES=$(ls drafts/*.html 2>/dev/null | sort | tail -n 1)
+          else
+            BEFORE="${{ github.event.before }}"
+            if git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              FILES=$(git diff --name-only --diff-filter=AM "$BEFORE" "${{ github.sha }}" -- 'drafts/*.html')
+            else
+              FILES=$(git diff-tree --no-commit-id --name-only -r --diff-filter=AM HEAD -- 'drafts/*.html')
+            fi
+          fi
+          echo "Черновики: $FILES"
+          echo "list=$(echo $FILES)" >> "$GITHUB_OUTPUT"
+
+      - name: Отправить на проверку
+        if: steps.files.outputs.list != ''
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          CHANNEL: ${{ vars.CHANNEL }}
+        run: python3 bot/send_draft.py ${{ steps.files.outputs.list }}
+
+  # Первые 30 минут после отправки бот слушает кнопки без задержки.
+  # Потом нажатия подхватывает listen.yml (раз в ~10 минут).
+  listen:
+    needs: send
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: telegram-listen
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Слушать кнопки 30 минут
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          CHANNEL: ${{ vars.CHANNEL }}
+        run: python3 bot/listen.py --minutes 30
