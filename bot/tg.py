@@ -1,9 +1,12 @@
 """Минимальный клиент Telegram Bot API без внешних библиотек."""
 import json
+import mimetypes
 import os
+import pathlib
 import sys
 import urllib.error
 import urllib.request
+import uuid
 
 API_BASE = os.environ.get("TG_API_BASE", "https://api.telegram.org")
 
@@ -31,13 +34,34 @@ class TelegramError(Exception):
     pass
 
 
-def call(method, http_timeout=60, **params):
+def _multipart(params, files):
+    boundary = uuid.uuid4().hex
+    parts = []
+    for key, value in params.items():
+        if not isinstance(value, str):
+            value = json.dumps(value)
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'.encode()
+                     + value.encode("utf-8") + b"\r\n")
+    for key, path in files.items():
+        path = pathlib.Path(path)
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"; '
+                     f'filename="{path.name}"\r\nContent-Type: {mime}\r\n\r\n'.encode()
+                     + path.read_bytes() + b"\r\n")
+    parts.append(f"--{boundary}--\r\n".encode())
+    return b"".join(parts), f"multipart/form-data; boundary={boundary}"
+
+
+def call(method, http_timeout=60, files=None, **params):
     params = {k: v for k, v in params.items() if v is not None}
-    data = json.dumps(params).encode("utf-8")
+    if files:
+        data, ctype = _multipart(params, files)
+    else:
+        data, ctype = json.dumps(params).encode("utf-8"), "application/json"
     req = urllib.request.Request(
         f"{API_BASE}/bot{TOKEN}/{method}",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": ctype},
     )
     try:
         with urllib.request.urlopen(req, timeout=http_timeout) as resp:
@@ -52,23 +76,48 @@ def call(method, http_timeout=60, **params):
     return body["result"]
 
 
-def send_draft(text=None, entities=None, html=None):
-    """Отправляет владельцу черновик с кнопками. Либо html, либо text+entities."""
-    common = dict(
-        chat_id=OWNER_ID,
-        reply_markup=DRAFT_BUTTONS,
-        link_preview_options={"is_disabled": True},
-    )
+def biggest_photo(msg):
+    photos = msg.get("photo") or []
+    return photos[-1]["file_id"] if photos else None
+
+
+def send_post(chat_id, text=None, entities=None, html=None, photo_path=None, photo_id=None,
+              reply_markup=None):
+    """Текстовый пост или пост с картинкой (подпись до 1024 символов)."""
+    photo = photo_id
+    files = {"photo": photo_path} if photo_path else None
     if html is not None:
-        try:
-            return call("sendMessage", text=html, parse_mode="HTML", **common)
-        except TelegramError as e:
-            if "parse" not in str(e).lower() and "entit" not in str(e).lower():
-                raise
+        body = {"parse_mode": "HTML"}
+        content = html
+    else:
+        body = {"entities" if not (photo or files) else "caption_entities": entities}
+        content = text
+    if photo or files:
+        return call("sendPhoto", chat_id=chat_id, photo=photo, caption=content,
+                    reply_markup=reply_markup, files=files, **body)
+    return call("sendMessage", chat_id=chat_id, text=content, reply_markup=reply_markup,
+                link_preview_options={"is_disabled": True}, **body)
+
+
+def send_draft(text=None, entities=None, html=None, photo_path=None, photo_id=None):
+    """Отправляет владельцу черновик с кнопками. Либо html, либо text+entities."""
+    kw = dict(text=text, entities=entities, html=html, photo_path=photo_path,
+              photo_id=photo_id, reply_markup=DRAFT_BUTTONS)
+    try:
+        return send_post(OWNER_ID, **kw)
+    except TelegramError as e:
+        err = str(e).lower()
+        if (photo_path or photo_id) and "caption is too long" in err:
+            notify("⚠️ Текст длиннее 1024 символов — Telegram не даёт столько под картинкой. "
+                   "Присылаю без картинки.")
+            kw.update(photo_path=None, photo_id=None)
+            return send_post(OWNER_ID, **kw)
+        if html is not None and ("parse" in err or "entit" in err):
             # Сломанная разметка: шлём как есть, чтобы черновик не потерялся
             notify(f"⚠️ В черновике сломана HTML-разметка ({e}). Присылаю без форматирования.")
-            return call("sendMessage", text=html, **common)
-    return call("sendMessage", text=text, entities=entities, **common)
+            kw.update(html=None, text=html)
+            return send_post(OWNER_ID, **kw)
+        raise
 
 
 def notify(text):

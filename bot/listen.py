@@ -2,8 +2,9 @@
 
 ✅ Опубликовать — пост уходит в канал (с тем же форматированием).
 🗑 Пропустить   — черновик помечается как пропущенный.
-Ответ на черновик своим текстом — бот присылает новую версию с кнопками.
-Любой свой текст боту — тоже становится черновиком с кнопками.
+Ответ на черновик своим текстом — бот присылает новую версию с кнопками
+(картинка, если была, остаётся). Ответ фото с подписью — новая версия с этим фото.
+Любой свой текст или фото с подписью боту — тоже становится черновиком с кнопками.
 
 Использование: python3 bot/listen.py --minutes 30   (слушать 30 минут)
                python3 bot/listen.py --minutes 0    (один быстрый проход)
@@ -17,8 +18,9 @@ HELP = (
     "Я присылаю черновики постов для {channel}.\n\n"
     "✅ — опубликовать в канал\n"
     "🗑 — пропустить\n"
-    "✏️ Поправить текст — ответь на черновик своей версией, пришлю новую с кнопками.\n"
-    "Свой пост — просто пришли мне текст, он тоже станет черновиком.\n\n"
+    "✏️ Поправить текст — ответь на черновик своей версией, пришлю новую с кнопками (картинка останется).\n"
+    "🖼 Другая картинка — ответь на черновик фото с подписью.\n"
+    "Свой пост — просто пришли мне текст или фото с подписью, он тоже станет черновиком.\n\n"
     "Отвечаю не мгновенно: проверяю сообщения раз в ~10 минут."
 )
 
@@ -42,6 +44,14 @@ def mark(msg, text, url=None):
          reply_markup={"inline_keyboard": [[button]]})
 
 
+def content_of(msg):
+    """Текст/подпись, форматирование и картинка сообщения — для повторной отправки."""
+    if msg.get("photo"):
+        return dict(text=msg.get("caption"), entities=msg.get("caption_entities"),
+                    photo_id=tg.biggest_photo(msg))
+    return dict(text=msg.get("text"), entities=msg.get("entities"))
+
+
 def post_link(post):
     username = (post.get("chat") or {}).get("username")
     if not username and tg.CHANNEL.startswith("@"):
@@ -54,7 +64,7 @@ def handle_callback(cq, handled):
     if cq["from"]["id"] != tg.OWNER_ID:
         return answer("Нет доступа")
     msg = cq.get("message") or {}
-    if not msg.get("text"):
+    if not (msg.get("text") or msg.get("photo")):
         return answer("Это сообщение уже недоступно")
     key = (msg["chat"]["id"], msg["message_id"])
     action = cq.get("data")
@@ -64,9 +74,7 @@ def handle_callback(cq, handled):
 
     if action == "pub":
         try:
-            post = tg.call("sendMessage", chat_id=tg.CHANNEL, text=msg["text"],
-                           entities=msg.get("entities"),
-                           link_preview_options={"is_disabled": True})
+            post = tg.send_post(tg.CHANNEL, **content_of(msg))
         except tg.TelegramError as e:
             answer("Не получилось 😕")
             tg.notify(f"❌ Не получилось опубликовать в {tg.CHANNEL}: {e}\n\n"
@@ -91,20 +99,23 @@ def handle_message(msg, handled):
     if msg.get("from", {}).get("id") != tg.OWNER_ID:
         return  # чужим не отвечаем
     text = msg.get("text")
-    if not text:
-        tg.notify("Пока умею только текстовые посты: пришли текст без фото и файлов.")
+    if not text and not msg.get("photo"):
+        tg.notify("Умею текстовые посты и посты с одной картинкой. Видео, файлы и альбомы пока не поддерживаю.")
         return
-    if text.strip().split()[0] in ("/start", "/help"):
+    if text and text.strip().split()[0] in ("/start", "/help"):
         tg.notify(HELP.format(channel=tg.CHANNEL) + f"\n\nТвой Telegram ID: {msg['from']['id']}")
         return
 
     replied = msg.get("reply_to_message") or {}
+    new = content_of(msg)
     if replied and is_draft(replied):
         key = (replied["chat"]["id"], replied["message_id"])
         if key not in handled:
             handled.add(key)
             mark(replied, "♻️ Заменён новой версией")
-    tg.send_draft(text=text, entities=msg.get("entities"))
+        if text and replied.get("photo"):
+            new["photo_id"] = tg.biggest_photo(replied)  # поправил текст — картинка остаётся
+    tg.send_draft(**new)
     print("Прислал новую версию черновика")
 
 
